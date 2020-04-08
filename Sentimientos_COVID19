@@ -3,7 +3,7 @@ rm(list = ls())   # Para eliminar todo por si hubiera algo anterior
 
 # Ponemos la dirección del proyecto
 
-setwd("C:/Users/Daniel/Desktop/)
+setwd("C:/Users/Daniel/Desktop/Text_Mining)
 
 # Utilizaremos las siguientes librerías:
 
