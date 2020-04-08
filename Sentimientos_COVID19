@@ -1,0 +1,256 @@
+
+rm(list = ls())   # Para eliminar todo por si hubiera algo anterior
+
+# Ponemos la dirección del proyecto
+
+setwd("C:/Users/Daniel/Desktop/)
+
+# Utilizaremos las siguientes librerías:
+
+pacman::p_load(tidyverse, rvest, stringr, syuzhet)
+
+# Creamos dos objetos vacíos:
+
+links_totales <- NULL #Objeto vacío
+links <- NULL #Objeto vacío
+
+# Hacemos el loop para el scrapeo de las conferencias del covid de la página de presidencia
+
+for(i in 1:22){     # Yo hice el loop hasta la página 22 porque el día que hice la descarga esa era la más vieja con información util
+  
+  cat(i, "...")
+  Sys.sleep(1)
+  
+  url <- paste0("https://www.gob.mx/presidencia/es/archivo/articulos?idiom=es&order=DESC&page=", i)
+  
+  pg <- read_html(url) ### Lee todo el código fuente
+  
+  titulo <- pg %>% 
+    html_nodes("h2") %>% # Ubicación del selector
+    html_text() %>%  # Título
+    enframe() %>% 
+    separate(value, c("titulo", "borrar"), sep="continuar leyendo") %>% 
+    select(name, titulo)
+  
+  links <- pg %>% 
+    html_nodes("a") %>% # Ubicación del selector
+    html_attr("href") %>%  # Enlaces a las conferencias
+    enframe() %>% 
+    filter(!grepl("DESC", value)) %>% 
+    rename(link=value) %>% 
+    mutate(link = gsub('\\"', "", link),       # Hacemos algunas transformaciones
+           link = gsub('\\\\"', "", link))
+  
+  infopg <- full_join(titulo, links)
+  
+  links_totales <- bind_rows(links_totales, infopg)
+}
+
+# Checamos que nuestra base haya quedado como nos interesa
+
+View(infopg)
+
+# Ahora vamos a utilizar los links relacionados al covid-19
+
+covid <- links_totales %>% 
+  filter(grepl("COVID|(c|C)ovid", titulo)) %>% 
+  mutate(link = str_remove(link, "\\\\")) %>% 
+  mutate(link = paste0("https://www.gob.mx", link))
+
+# Se identificaron como 38 conferencias (esto cambia según el día de la descarga)
+
+# Hacemos otro loop para buscar la fecha y el título de la conferencia extrayendo los elementos de cada párrafo
+# Hacemos otros dos objetos vacíos
+
+base <- NULL
+bind <- NULL
+
+# Ojo: tuve que borrar mi primera observación porque estaba mal el url
+covid_ <- covid[-1, ] 
+
+for (x in 1:nrow(covid_)) {
+  
+  cat(x, "...") #Contador
+  
+  url <- covid_$link[x]
+  
+  pg <- read_html(url) 
+  
+  fecha <- pg %>% 
+    html_node("dd~ dd") %>% 
+    html_text()
+  
+  if(length(titulo) == 0) {
+    titulo <- NA 
+  }
+  
+  titulo <- pg %>% 
+    html_node(".bottom-buffer") %>% 
+    html_text()
+  
+  if(length(titulo) == 0) {
+    titulo <- NA 
+  }
+  
+  texto <- pg %>% 
+    html_nodes(".article-body p") %>% ## Selector para el párrafo
+    html_text() %>% 
+    na.omit()
+  
+  if(length(texto) == 0) {
+    texto <- NA 
+  }
+  
+  bind <- tibble(titulo, fecha, texto)
+  base <- bind_rows(base, bind)
+}
+
+# Borramos los NA
+
+base <- base %>% 
+  na.omit()
+
+# Checamos que todo esté en orden
+
+View(base)
+
+# Guardamos el archivo como un csv
+
+write.csv(base, "base_covid.csv")
+
+#########################################################
+#                                                       #
+#                 ANALISIS DE SENTIMIENTOS              #
+#                                                       #
+#########################################################
+
+rm(list = ls())
+
+# Librerías
+
+pacman::p_load(tidyverse, rvest, stringr, syuzhet, textdata, 
+               tidytext, lubridate, GGally, reshape2, rtweet)
+               
+# Estos son algunos de los diccionarios de sentimientos pero en INGLÉS
+
+get_sentiments("afinn") # http://www2.imm.dtu.dk/pubdb/views/publication_details.php?id=6010
+
+get_sentiments("bing")
+
+get_sentiments("nrc")
+
+# Abrimos nuestro archivo
+
+covid <- read_csv("base_covid.csv", locale = locale(encoding = "LATIN1")) %>% 
+  select(-X1) %>%  # Quitar la primer columna que nos puso
+  rowid_to_column("id")
+
+# Para los sentimientos:
+
+sentimientos <- get_nrc_sentiment(covid$texto[1:7430], language = "spanish")
+
+# Hacemos transformaciones necesarias
+
+covid.sentimientos <- covid %>% 
+  left_join(
+    sentimientos %>% 
+      rowid_to_column("id")
+  ) %>% 
+  mutate(fecha = gsub("de ", "", fecha)) %>% 
+  mutate(fecha = as.Date(fecha, format= "%d %B %Y"))
+
+View(covid.sentimientos)
+#######################################################################################
+
+# LAS GRÁFICAS:
+
+# Primero transformé la base de datos para tener las variables en español
+
+covid.esp <- covid.sentimientos %>%  # Esto es para tener otros nombres de columnas
+  rename(Enojo = anger,
+         Anticipación = anticipation,
+         Disgusto = disgust,
+         Miedo = fear,
+         Felicidad = joy,
+         Negativo = negative,
+         Positivo = positive,
+         Tristeza = sadness,
+         Sorpresa = surprise,
+         Confianza = trust)
+
+# Gráfica 1: Barras
+
+covid.esp %>% 
+  group_by(fecha) %>% 
+  summarise(Positivo = sum(Positivo),
+            Negativo = sum(Negativo)) %>% 
+  ggplot(aes(x = fecha, y = Positivo - Negativo,
+             fill = (Positivo - Negativo) >0)) +
+  theme(axis.text.x = element_text(face="bold", color = "#993333",
+                                   size = 10, angle = 90),
+        axis.text.y = element_text(face = "bold", color = "#993333",
+                                   size = 11)) +
+  scale_x_date(date_breaks = "2 day") +
+  labs(title = "Análisis de sentimientos de las conferencias del COVID-19",
+       subtitle = "Diferencias de sentimientos positivos y negativos",
+       caption = "Fuente: https://www.gob.mx/presidencia/",
+       y = "Cantidad", 
+       x = "Fecha") +
+  geom_col(show.legend = FALSE)
+
+# Gráfica 2: Por sentimiento
+
+covid.esp %>% 
+  select(-id) %>% 
+  group_by(fecha) %>% 
+  summarise_if(is.numeric, sum) %>% 
+  pivot_longer(-fecha, names_to = "sentimiento",
+               values_to = "puntaje") %>% 
+  ggplot(aes(x = fecha, y = puntaje,
+             fill = sentimiento)) +
+  geom_col() +
+  facet_wrap(~sentimiento) +
+  labs(title = "Análisis de sentimientos de las conferencias del COVID-19",
+       subtitle = "Desgloce por sentimiento",
+       caption = "Fuente: https://www.gob.mx/presidencia/",
+       y = "Cantidad",
+       x = "Fecha") +
+  theme(plot.title = element_text(face = "bold"), 
+        axis.text.x = element_text(face="bold", color = "#993333",
+                                   size = 8.5, angle = 90),
+        axis.text.y = element_text(face = "bold", color = "#993333",
+                                   size = 10)) +
+  scale_x_date(date_breaks = "5 day") +
+  guides(fill = F)
+
+# Gráfica 3: Barras por sentimiento
+
+covid.esp %>% 
+  select(-id) %>% 
+  summarise_if(is.numeric, sum) %>% 
+  pivot_longer(everything(), names_to = "sentimiento",
+               values_to = "puntaje") %>% 
+  ggplot(aes(x = sentimiento, y = puntaje,
+             fill = sentimiento)) +
+  theme(plot.title = element_text(face = "bold"), 
+        axis.text.x = element_text(face="bold", color = "#993333",
+                                   size = 11, angle = 90),
+        axis.text.y = element_text(face = "bold", color = "#993333",
+                                   size = 10)) +
+  labs(title = "Análisis de sentimientos de las conferencias del COVID-19",
+       subtitle = "Cantidad total de sentimientos (del 28/02/20 al 04/04/20)",
+       caption = "Fuente: https://www.gob.mx/presidencia/",
+       y = "Cantidad",
+       x = "Sentimientos") +
+  geom_col(show.legend = FALSE)
+
+# Gráfica 4: Correlaciones
+
+covid.esp %>% 
+  select(Enojo:Positivo) %>%
+  ggpairs()
+  
+# Listo!
+  
+  
+  
